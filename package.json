@@ -1,0 +1,13 @@
+{
+  "name": "attention-router",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-only supervision dashboard for Claude Code sessions — state, not log.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test"
+  }
+}
