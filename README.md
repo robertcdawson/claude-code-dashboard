@@ -60,8 +60,7 @@ supervised project:
 ## Install as a plugin
 
 ```bash
-git clone <this repo> attention-router
-claude --plugin-dir ./attention-router
+claude --plugin-url https://github.com/robertcdawson/claude-code-dashboard/archive/refs/heads/main.zip
 ```
 
 Or install it into `~/.claude/settings.json` / a project's `.claude/settings.json`
