@@ -1,1 +1,143 @@
-# claude-code-dashboard
+# Attention Router
+
+A local-only dashboard for supervising a running Claude Code session — `/loop`
+runs, long tasks, agent sessions — from a browser tab or your phone, while
+Claude Code itself stays entirely in the terminal.
+
+**State, not log.** The terminal is a time-ordered stream of everything that
+happened. This dashboard is a materialized view that answers, in under three
+seconds: *where are things, what changed since I last looked, and does
+anything need me?*
+
+|                                    Light                                    |                                   Dark                                    |
+| :---------------------------------------------------------------------------: | :--------------------------------------------------------------------------: |
+| ![Light theme](docs/screenshot-light.png) | ![Dark theme](docs/screenshot-dark.png) |
+
+Tapping a health chip opens a drill-down sheet — what it is, why, and what you
+can do about it, without leaving the browser:
+
+![Off-plan drill-down](docs/screenshot-drilldown.png)
+
+## How it works
+
+```
+attention-router/
+├── hooks/            # Node scripts wired into Claude Code hook events
+├── server/           # single Node process, no framework, no database
+├── ui/               # static vanilla-JS SPA, served by server/
+├── .claude-plugin/    # plugin manifest + hooks.json
+└── commands/          # the /attention-router:open slash command
+```
+
+1. **Hooks** fire on Claude Code lifecycle events (`SessionStart`,
+   `PostToolUse`, `Stop`, `Notification`, `SessionEnd`, `SubagentStop`, plus
+   `UserPromptSubmit` — see [Deviations from the spec](#deviations-from-the-spec)).
+   Each hook wraps its payload in `{id, ts, event, payload}`, appends it to
+   `.claude/attention/events.jsonl` in the supervised project, and
+   fire-and-forget POSTs it to the local server. Hooks always exit `0`, use a
+   500ms POST timeout, and never block Claude Code — even if the dashboard is
+   closed, unreachable, or crashed.
+2. **The server** is a single Node process (built-ins only — no npm install
+   needed). It reduces `events.jsonl` into `state.json` on every event,
+   broadcasts the new state over Server-Sent Events, and serves the UI. It's
+   a *self-healing lazy daemon*: the first hook event of any session spawns
+   it automatically if it isn't already running.
+3. **The UI** is a static page that renders `state.json` live via SSE — no
+   build step, no framework.
+
+Everything persists as plain files under `.claude/attention/` in the
+supervised project:
+
+| File             | Purpose                                             |
+| ---------------- | ---------------------------------------------------- |
+| `events.jsonl`   | append-only log — the durable source of truth        |
+| `state.json`     | last reducer output (what the UI renders)             |
+| `inbox.jsonl`     | directives you send from the browser, waiting for delivery into the session |
+| `cursor.json`     | last-acknowledged event, drives the "N new" counter    |
+| `plan.md`         | optional hand-authored plan (`- [ ] task`, one per line), merged with Claude's live TodoWrite state |
+| `config.json`     | optional `{"enabled": false}` per-project kill switch  |
+
+## Install as a plugin
+
+```bash
+git clone <this repo> attention-router
+claude --plugin-dir ./attention-router
+```
+
+Or install it into `~/.claude/settings.json` / a project's `.claude/settings.json`
+as a local plugin path. Once enabled, hooks fire automatically — there's no
+separate "start the server" step.
+
+To open the dashboard from inside a session:
+
+```
+/attention-router:open
+```
+
+This makes sure the daemon is running and opens `http://localhost:4123` with
+your platform's default opener (falls back to printing the URL if none is
+found, e.g. in a headless environment).
+
+## Running it standalone (development)
+
+```bash
+npm start            # node server/index.js — listens on :4123
+npm test             # node --test — reducer + sun-scheduler unit tests
+```
+
+No dependencies to install — everything is Node built-ins. Requires Node
+`>=20`.
+
+`GET /health`, `GET /state?cwd=...`, `GET /stream?cwd=...` (SSE),
+`GET /api/projects`, `POST /event`, and `POST /action` are the whole server
+API. With exactly one active project, `?cwd=` can be omitted from `/state`
+and `/stream`; with more than one, `/` shows a session picker.
+
+## Configuration
+
+- **Port**: `ATTENTION_ROUTER_PORT` (default `4123`).
+- **Kill switch**: set `ATTENTION_ROUTER=off` in the environment, or write
+  `{"enabled": false}` to `.claude/attention/config.json` in the supervised
+  project — every hook exits immediately, no-op.
+- **Dark mode**: a three-way setting (Auto / Light / Dark) in the header,
+  persisted in `localStorage`. Auto computes local sunrise/sunset in the
+  browser with the NOAA solar-position algorithm (`ui/sun-math.js`, no
+  dependency) from a one-time cached `navigator.geolocation` reading, falling
+  back to a fixed 19:00–07:00 window if location is unavailable or denied.
+  The theme re-evaluates itself exactly at the next sunrise/sunset boundary.
+
+## Deviations from the spec
+
+The build spec enumerated six hook events. In practice, `now.goal` (the
+dashboard's "what is this session even about" field) has no source among
+those six — none of `SessionStart`/`PostToolUse`/`Stop`/`Notification`/
+`SessionEnd`/`SubagentStop` carry the user's prompt text. This build adds a
+seventh, minimal hook on `UserPromptSubmit` (same fire-and-forget pipeline,
+same kill switch) purely to capture the first prompt of a session, or an
+explicit `/goal ...` override typed later. Everything else follows the spec
+as written.
+
+## Testing notes
+
+`npm test` covers the reducer (against an authored fixture exercising a
+normal run, an off-plan file, a rework burst, a `Notification`, and a
+passed→failed test transition) and the sun-scheduler math (known
+sunrise/sunset reference values, polar day/night, fallback window, and
+theme resolution) — all pure functions, no mocked clock required since `now`
+and coordinates are passed in explicitly.
+
+Beyond the unit suite, this build was verified against a live server process
+in a scratch git repo: hook scripts piped real stdin JSON end-to-end through
+`/event` → reducer → `/state`/`/stream`; the self-healing daemon was killed
+and confirmed to resurrect itself from the next hook call; state was
+confirmed to survive a server restart (rebuilt from `events.jsonl`); the
+directive round trip was confirmed (`POST /action` → `inbox.jsonl` →
+consumed and delivered by a real `PostToolUse` hook invocation); and the UI
+screenshots above were captured from that live server with Playwright/
+Chromium. What this build has **not** been verified against is a real
+interactive `claude` session driving the hooks (this environment doesn't
+have the `claude` CLI available to invoke recursively) — the fixture and
+manual `curl`/hook-script tests above are the closest available substitute.
+If something about a real session's payload shape doesn't match what's
+implemented here, the hooks reference is the source of truth to reconcile
+against.

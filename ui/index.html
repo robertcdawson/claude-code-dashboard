@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>Attention Router</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="wrap" id="picker" hidden>
+  <header>
+    <div class="titleblock"><h1>Attention Router</h1></div>
+  </header>
+  <section class="card" aria-labelledby="h-picker">
+    <h2 id="h-picker">Active projects</h2>
+    <ul class="picker-list" id="picker-list"></ul>
+  </section>
+</div>
+
+<div class="wrap" id="dashboard" hidden>
+  <header>
+    <div class="statusline">
+      <span class="pill" id="pill"><span class="dot" aria-hidden="true"></span><span id="pill-text">Working</span></span>
+      <span class="elapsed num" id="elapsed">—</span>
+      <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Change color theme">Auto</button>
+    </div>
+    <div class="titleblock">
+      <h1 id="goal">Loading…</h1>
+    </div>
+    <button id="ack" aria-live="polite">
+      <span>
+        <span class="big" id="ackbig">All caught up</span><br>
+        <span class="sub" id="acksub">Nothing new needs your attention</span>
+      </span>
+      <span class="chev" aria-hidden="true">›</span>
+    </button>
+  </header>
+
+  <!-- Now -->
+  <section class="card" aria-labelledby="h-now">
+    <h2 id="h-now">Happening now</h2>
+    <div class="now-step">
+      <p id="now-step-text">Waiting for activity…</p>
+      <span class="count num" id="now-step-count"></span>
+    </div>
+    <p class="now-doing" id="nowdoing"></p>
+    <div class="progress" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"
+      aria-label="Overall progress" id="progressbar"><i id="progressbar-fill"></i></div>
+  </section>
+
+  <!-- Health -->
+  <section aria-labelledby="h-health">
+    <h2 id="h-health" style="margin-bottom:10px">Health</h2>
+    <div class="health" id="health-grid"></div>
+  </section>
+
+  <div class="cols">
+    <!-- Decisions -->
+    <section class="card" aria-labelledby="h-dec">
+      <h2 id="h-dec">Choices Claude made</h2>
+      <div class="dec-list" id="declist"></div>
+    </section>
+
+    <!-- Plan -->
+    <section class="card" aria-labelledby="h-plan">
+      <details class="plan" open>
+        <summary>
+          <div class="h">
+            <h2 id="h-plan">Plan · <span class="num" id="plan-count">0 of 0 done</span></h2>
+          </div>
+          <span class="chev" aria-hidden="true">›</span>
+        </summary>
+        <ul id="plan-list"></ul>
+      </details>
+    </section>
+  </div>
+</div>
+
+<div class="wrap" id="empty-state" hidden>
+  <header><div class="titleblock"><h1>Attention Router</h1></div></header>
+  <section class="card">
+    <h2>No session yet</h2>
+    <p style="color:var(--mut);margin-top:8px">Start a Claude Code session in a project with this plugin enabled — the first hook event brings the dashboard to life.</p>
+  </section>
+</div>
+
+<!-- Drill-down -->
+<div id="scrim"></div>
+<div id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" aria-hidden="true">
+  <div class="sheet-head">
+    <h3 id="sheet-title">Details</h3>
+    <button class="close" id="sheetclose" aria-label="Close details">×</button>
+  </div>
+  <div id="sheet-body"></div>
+</div>
+
+<script src="sun-math.js"></script>
+<script src="theme.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
