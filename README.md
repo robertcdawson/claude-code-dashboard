@@ -59,13 +59,26 @@ supervised project:
 
 ## Install as a plugin
 
-```bash
-claude --plugin-url https://github.com/robertcdawson/claude-code-dashboard/archive/refs/heads/main.zip
+This repo is its own marketplace (`.claude-plugin/marketplace.json`), so a
+persistent install just needs its two commands — no separate marketplace
+repo, no approval, no npm install:
+
+```
+/plugin marketplace add robertcdawson/claude-code-dashboard
+/plugin install attention-router@attention-router-marketplace
 ```
 
-Or install it into `~/.claude/settings.json` / a project's `.claude/settings.json`
-as a local plugin path. Once enabled, hooks fire automatically — there's no
-separate "start the server" step.
+For a one-off, session-only load instead (nothing persisted, gone once you
+exit `claude`):
+
+```bash
+claude --plugin-url https://github.com/robertcdawson/claude-code-dashboard/archive/refs/heads/main.zip
+# or, from a local clone:
+claude --plugin-dir ./claude-code-dashboard
+```
+
+Either way, once enabled, hooks fire automatically — there's no separate
+"start the server" step.
 
 To open the dashboard from inside a session:
 

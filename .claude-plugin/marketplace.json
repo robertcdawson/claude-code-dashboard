@@ -1,0 +1,13 @@
+{
+  "name": "attention-router-marketplace",
+  "owner": {
+    "name": "robertcdawson"
+  },
+  "plugins": [
+    {
+      "name": "attention-router",
+      "source": "./",
+      "description": "Supervise a running Claude Code session from a browser tab or phone — state, not log. Zero-config local dashboard, no external services."
+    }
+  ]
+}
