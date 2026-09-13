@@ -76,13 +76,19 @@ function appendEvent(cwd, envelope) {
   const project = getProject(cwd);
   // A hook may have already written this same event to events.jsonl before
   // POSTing it here (its own durability path, which works even if the
-  // server is briefly unreachable). Persist it here too so *any* caller of
-  // /event survives a server restart; dedupe by id against whatever's
-  // in-memory so a hook's own write never becomes a visible duplicate.
-  if (!project.events.some((e) => e.id === envelope.id)) {
+  // server is briefly unreachable). The in-memory event list only reflects
+  // whatever was hydrated when the project object was created, so a hook
+  // can append a line to the file after that point without us ever seeing
+  // it in memory. Treat an id as known if it's already in memory OR
+  // already on disk, and only touch memory / the file for ids that are new
+  // to both, so each event id ends up persisted exactly once.
+  const known = project.events.some((e) => e.id === envelope.id);
+  if (!known) {
     project.events.push(envelope);
   }
-  store.appendEvent(cwd, envelope);
+  if (!known && !store.hasEventId(cwd, envelope.id)) {
+    store.appendEvent(cwd, envelope);
+  }
   return recompute(cwd);
 }
 

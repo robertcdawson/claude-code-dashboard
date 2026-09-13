@@ -76,10 +76,21 @@
     };
   }
 
-  // ── Elapsed timer ────────────────────────────────────────────
+  // ── Elapsed timer + read-driven refresh ─────────────────────
   setInterval(() => {
     if (currentState && currentState.startedAt) renderElapsed(currentState);
+    if (cwd) refreshState();
   }, 30000);
+
+  async function refreshState() {
+    try {
+      const state = await fetch(`/state?cwd=${encodeURIComponent(cwd)}`).then((r) => r.json());
+      currentState = state;
+      render(state);
+    } catch {
+      // ignore transient fetch errors
+    }
+  }
 
   function renderElapsed(state) {
     if (!state.startedAt) {
@@ -91,13 +102,19 @@
   }
 
   const STATUS_LABEL = { working: 'Working', needs_you: 'Needs you', finished: 'Finished', idle: 'Idle' };
+  function statusLabel(state) {
+    if (state.status === 'stale') {
+      return state.idleMs === null ? 'No recent activity' : `No activity for ${Math.round(state.idleMs / 60000)} min`;
+    }
+    return STATUS_LABEL[state.status] || state.status;
+  }
   const BASE_TITLE = document.title;
 
   function render(state) {
     // Status pill + title + native notification
     const pill = $('pill');
     pill.dataset.status = state.status;
-    $('pill-text').textContent = STATUS_LABEL[state.status] || state.status;
+    $('pill-text').textContent = statusLabel(state);
     document.title = state.status === 'needs_you' ? `● ${BASE_TITLE}` : BASE_TITLE;
     if (state.attention.needsYou && !wasNeedsYou) notifyNeedsYou(state);
     wasNeedsYou = state.attention.needsYou;
@@ -122,7 +139,9 @@
     }
 
     // Now card
-    $('now-step-text').textContent = state.now.currentStepText || (state.now.goal ? 'Getting started…' : 'Waiting for activity…');
+    $('now-step-text').textContent = state.now.currentStepText
+      || (state.plan.totalCount === 0 && state.now.goal ? 'Working without a task list'
+        : state.now.goal ? 'Getting started…' : 'Waiting for activity…');
     $('now-step-count').textContent = state.now.stepIndex ? `step ${state.now.stepIndex} of ${state.now.stepCount}` : '';
     $('nowdoing').textContent = state.now.doing || '';
     $('progressbar').setAttribute('aria-valuenow', String(state.now.progressPct));
@@ -147,9 +166,11 @@
     {
       key: 'offPlanWork',
       name: 'Off-plan work',
-      value: (h) => `${h.offPlanWork.pct}%`,
-      word: (h) => wordFor(h.offPlanWork.level, ['Fine', 'Worth a look', 'Needs attention']),
-      hint: (h) => `${h.offPlanWork.files.length} file${h.offPlanWork.files.length === 1 ? '' : 's'} changed that the plan never mentions`,
+      value: (h) => (h.offPlanWork.noPlan ? '—' : `${h.offPlanWork.pct}%`),
+      word: (h) => (h.offPlanWork.noPlan ? 'No plan' : wordFor(h.offPlanWork.level, ['Fine', 'Worth a look', 'Needs attention'])),
+      hint: (h) => (h.offPlanWork.noPlan
+        ? "Claude hasn't written a task list"
+        : `${h.offPlanWork.files.length} file${h.offPlanWork.files.length === 1 ? '' : 's'} changed that the plan never mentions`),
     },
     {
       key: 'rework',
@@ -310,6 +331,13 @@
   const SHEET_BUILDERS = {
     offPlanWork(state) {
       const h = state.health.offPlanWork;
+      if (h.noPlan) {
+        const wrap = el(`<div>
+          <div class="drift-sum"><span class="v num">No plan</span></div>
+          <p class="sheet-explain">Nothing to compare against — Claude hasn't written a task list and there is no plan.md</p>
+        </div>`);
+        return wrap;
+      }
       const deltaText = h.deltaFromLastHour === null
         ? ''
         : `<p class="sheet-explain">${h.deltaFromLastHour >= 0 ? 'Up' : 'Down'} ${Math.abs(h.deltaFromLastHour)} points from an hour ago.</p>`;
@@ -328,12 +356,14 @@
         </div>
         <p class="sheet-note">Actions send a message to the running session — you stay in the loop, Claude stays in the terminal.</p>
       </div>`);
-      wrap.querySelector('#sheet-adopt').addEventListener('click', async () => {
+      const adoptBtn = wrap.querySelector('#sheet-adopt');
+      if (adoptBtn) adoptBtn.addEventListener('click', async () => {
         const taskText = h.files.length ? `Off-plan work: ${h.files.map((f) => f.name).join(', ')}` : 'Off-plan work';
         await postAction({ type: 'adopt-task', taskText });
         closeSheet();
       });
-      wrap.querySelector('#sheet-undo').addEventListener('click', async () => {
+      const undoBtn = wrap.querySelector('#sheet-undo');
+      if (undoBtn) undoBtn.addEventListener('click', async () => {
         const names = h.files.map((f) => f.name).join(', ') || 'the off-plan changes';
         await postAction({ type: 'directive', text: `Please undo the off-plan work in ${names}, or explain why it's needed before continuing.` });
         closeSheet();

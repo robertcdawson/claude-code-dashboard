@@ -14,8 +14,19 @@ function isGitRepo(cwd) {
   }
 }
 
+// Whether the repo at cwd has at least one commit (i.e. HEAD resolves).
+function hasCommits(cwd) {
+  try {
+    execFileSync('git', ['-C', cwd, 'rev-parse', '--verify', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Combined working-tree + staged diff against HEAD, per file.
-// Returns [] outside a git repo or before the first commit.
+// Returns [] outside a git repo. Before the first commit, diffs against the
+// empty tree instead, since `git diff HEAD` has no HEAD to compare to.
 function numstat(cwd) {
   if (!isGitRepo(cwd)) return [];
   const tryRun = (args) => {
@@ -25,11 +36,11 @@ function numstat(cwd) {
       return '';
     }
   };
-  let out = tryRun(['diff', '--numstat', 'HEAD']);
-  if (!out) {
-    // no commits yet: diff the empty tree against the index+worktree
-    out = tryRun(['diff', '--numstat', '4b825dc642cb6eb9a060e54bf8d69288fbee4904']);
-  }
+  // Once there's a commit, `git diff --numstat HEAD` is authoritative on its
+  // own: empty output means a clean tree, not "no commits yet".
+  const out = hasCommits(cwd)
+    ? tryRun(['diff', '--numstat', 'HEAD'])
+    : tryRun(['diff', '--numstat', '4b825dc642cb6eb9a060e54bf8d69288fbee4904']);
   const files = [];
   for (const line of out.split('\n')) {
     if (!line.trim()) continue;
@@ -72,4 +83,4 @@ function newDependencyCount(cwd) {
   return count;
 }
 
-module.exports = { isGitRepo, numstat, newDependencyCount };
+module.exports = { isGitRepo, hasCommits, numstat, newDependencyCount };

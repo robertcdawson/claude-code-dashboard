@@ -52,6 +52,7 @@ header{padding:20px 0 4px;display:flex;flex-direction:column;gap:10px}
 .pill[data-status="needs_you"]{background:var(--red-soft);color:var(--red)}
 .pill[data-status="finished"]{background:var(--accent-soft);color:var(--accent)}
 .pill[data-status="idle"]{background:var(--line);color:var(--mut)}
+.pill[data-status="stale"]{background:var(--line);color:var(--mut)}
 .pill .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
 @media (prefers-reduced-motion:no-preference){
   .pill .dot{animation:breathe 2.6s ease-in-out infinite}
@@ -105,6 +106,7 @@ h1{font-size:1.15rem;line-height:1.35}
 .chip[data-level="attention"]{border-color:#e3b8b8;background:linear-gradient(var(--red-soft),var(--card))}
 .chip[data-level="attention"] .c-word{color:var(--red)}
 .chip[data-level="unknown"] .c-word{color:var(--faint)}
+.chip[data-level="none"] .c-word{color:var(--faint)}
 .chip .c-hint{margin-top:2px;color:var(--faint);font-size:.78rem}
 
 /* Plan */
