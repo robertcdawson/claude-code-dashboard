@@ -51,6 +51,23 @@ function appendEvent(cwd, envelope) {
   appendJsonl(path.join(dirFor(cwd), 'events.jsonl'), envelope);
 }
 
+function hasEventId(cwd, id) {
+  const file = path.join(dirFor(cwd), 'events.jsonl');
+  if (!fs.existsSync(file)) return false;
+  const raw = fs.readFileSync(file, 'utf8');
+  const lines = raw.split('\n').filter((l) => l.trim());
+  const tail = lines.slice(-1000);
+  for (const line of tail) {
+    try {
+      const obj = JSON.parse(line);
+      if (obj.id === id) return true;
+    } catch {
+      // skip a corrupt line rather than fail the scan
+    }
+  }
+  return false;
+}
+
 function readState(cwd) {
   const file = path.join(dirFor(cwd), 'state.json');
   if (!fs.existsSync(file)) return null;
@@ -133,6 +150,7 @@ module.exports = {
   ensureDir,
   readEvents,
   appendEvent,
+  hasEventId,
   readState,
   writeState,
   readInbox,

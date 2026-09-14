@@ -67,6 +67,7 @@ describe('reducer: off-plan work', () => {
     // 100 off-plan lines (adapter.js) out of 175 total changed lines
     assert.equal(offPlan.pct, 57);
     assert.equal(offPlan.level, 'attention');
+    assert.equal(offPlan.noPlan, false);
   });
 
   test('does not flag files that map to an in-progress or done task', () => {
@@ -74,6 +75,27 @@ describe('reducer: off-plan work', () => {
     const paths = state.health.offPlanWork.files.map((f) => f.path);
     assert.ok(!paths.includes('src/migration.js'));
     assert.ok(!paths.includes('src/worker.js'));
+  });
+
+  test('reports noPlan when there are no non-extra plan tasks', () => {
+    const events = [
+      { id: 'n1', ts: '2026-01-01T09:00:00.000Z', event: 'SessionStart', payload: { session_id: 'sess-noplan', cwd: '/demo/project', model: 'claude-sonnet-5', branch: 'main' } },
+      { id: 'n2', ts: '2026-01-01T09:00:05.000Z', event: 'UserPromptSubmit', payload: { cwd: '/demo/project', prompt: 'Do something without a plan' } },
+    ];
+    const previousHistory = [
+      { pct: 10, ts: Date.parse('2026-01-01T08:00:00.000Z') },
+      { pct: 20, ts: Date.parse('2026-01-01T08:30:00.000Z') },
+    ];
+    const state = reduceFixture(events, { planFileTasks: [], previousHistory });
+    const offPlan = state.health.offPlanWork;
+    assert.equal(offPlan.noPlan, true);
+    assert.equal(offPlan.pct, null);
+    assert.equal(offPlan.level, 'none');
+    assert.equal(offPlan.files.length, 0);
+    assert.equal(offPlan.offPlanLoc, 0);
+    assert.equal(offPlan.history.length, previousHistory.length);
+    assert.deepEqual(offPlan.history, previousHistory);
+    assert.equal(offPlan.deltaFromLastHour, null);
   });
 });
 
@@ -125,7 +147,9 @@ describe('reducer: notification / needsYou', () => {
 
   test('without a Notification, status is working', () => {
     const events = loadFixture().slice(0, -1);
-    const state = reduceFixture(events);
+    // Use a `now` close to the last remaining event's ts so this exercises the
+    // needsYou path, not the (separately tested) stale-after-10-minutes path.
+    const state = reduceFixture(events, { now: Date.parse('2026-01-01T09:17:00.000Z') });
     assert.equal(state.status, 'working');
     assert.equal(state.attention.needsYou, false);
   });
@@ -185,5 +209,61 @@ describe('reducer: SessionEnd', () => {
     ];
     const state = reduceFixture(events);
     assert.equal(state.status, 'finished');
+  });
+});
+
+describe('reducer: stale status', () => {
+  const NOW = Date.parse('2026-01-01T09:30:00.000Z');
+
+  test('status is stale when the last event is more than 10 minutes old', () => {
+    const events = [
+      ...loadFixture().slice(0, 4),
+      { id: 'z1', ts: '2026-01-01T09:19:00.000Z', event: 'PostToolUse', payload: { cwd: '/demo/project', tool_name: 'Read', tool_input: { file_path: 'src/worker.js' } } },
+    ];
+    const state = reduceFixture(events, { now: NOW });
+    assert.equal(state.status, 'stale');
+  });
+
+  test('status is working when the last event is under 10 minutes old', () => {
+    const events = [
+      ...loadFixture().slice(0, 4),
+      { id: 'z2', ts: '2026-01-01T09:21:00.000Z', event: 'PostToolUse', payload: { cwd: '/demo/project', tool_name: 'Read', tool_input: { file_path: 'src/worker.js' } } },
+    ];
+    const state = reduceFixture(events, { now: NOW });
+    assert.equal(state.status, 'working');
+  });
+
+  test('a trailing SessionEnd is finished regardless of age', () => {
+    const events = [
+      ...loadFixture().slice(0, 4),
+      { id: 'z3', ts: '2026-01-01T08:00:00.000Z', event: 'SessionEnd', payload: { cwd: '/demo/project', reason: 'other' } },
+    ];
+    const state = reduceFixture(events, { now: NOW });
+    assert.equal(state.status, 'finished');
+  });
+
+  test('a Notification-driven needs_you case stays needs_you regardless of age', () => {
+    const events = [
+      ...loadFixture().slice(0, 4),
+      { id: 'z4', ts: '2026-01-01T08:00:00.000Z', event: 'Notification', payload: { cwd: '/demo/project', notification_type: 'permission_prompt', message: 'Permission needed to run a command' } },
+    ];
+    const state = reduceFixture(events, { now: NOW });
+    assert.equal(state.attention.needsYou, true);
+    assert.equal(state.status, 'needs_you');
+  });
+});
+
+describe('reducer: idleMs', () => {
+  test('idleMs is now minus the last event timestamp', () => {
+    const events = loadFixture();
+    const now = Date.parse('2026-01-01T09:30:00.000Z');
+    const state = reduceFixture(events, { now });
+    const lastTs = Date.parse(events[events.length - 1].ts);
+    assert.equal(state.idleMs, now - lastTs);
+  });
+
+  test('idleMs is null when there are no session events', () => {
+    const state = reduceFixture([]);
+    assert.equal(state.idleMs, null);
   });
 });

@@ -167,12 +167,25 @@ function computeRework(sessionEvents) {
 }
 
 function computeOffPlan(gitFiles, planTasks, opts) {
+  const nonExtraTasks = planTasks.filter((t) => !t.extra);
   const changed = gitFiles.filter((f) => !f.binary);
   const totalLoc = changed.reduce((sum, f) => sum + f.added + f.deleted, 0);
+  if (nonExtraTasks.length === 0) {
+    return {
+      pct: null,
+      level: 'none',
+      noPlan: true,
+      totalLoc,
+      offPlanLoc: 0,
+      files: [],
+      history: (opts.previousHistory || []).slice(-24),
+      deltaFromLastHour: null,
+    };
+  }
   const offPlanFiles = [];
   let offPlanLoc = 0;
   for (const f of changed) {
-    const match = matchesAnyTask(f.path, planTasks.filter((t) => !t.extra));
+    const match = matchesAnyTask(f.path, nonExtraTasks);
     if (!match) {
       offPlanLoc += f.added + f.deleted;
       offPlanFiles.push({
@@ -203,7 +216,7 @@ function computeOffPlan(gitFiles, planTasks, opts) {
   const priorSnap = [...history].reverse().find((s) => s.ts <= hourAgo);
   const deltaFromLastHour = priorSnap ? pct - priorSnap.pct : null;
 
-  return { pct, level, totalLoc, offPlanLoc, files: offPlanFiles.sort((a, b) => b.loc - a.loc), history, deltaFromLastHour };
+  return { pct, level, noPlan: false, totalLoc, offPlanLoc, files: offPlanFiles.sort((a, b) => b.loc - a.loc), history, deltaFromLastHour };
 }
 
 function computeAddedCode(gitFiles, newDeps) {
@@ -271,11 +284,14 @@ function computeNeedsYou(sessionEvents) {
   return Boolean(last && last.event === 'Notification');
 }
 
-function computeStatus(sessionEvents, needsYou) {
+const STALE_MS = 10 * 60 * 1000;
+
+function computeStatus(sessionEvents, needsYou, now) {
   if (sessionEvents.length === 0) return 'idle';
   if (needsYou) return 'needs_you';
   const last = sessionEvents[sessionEvents.length - 1];
   if (last.event === 'SessionEnd') return 'finished';
+  if (now - Date.parse(last.ts) > STALE_MS) return 'stale';
   return 'working';
 }
 
@@ -308,14 +324,18 @@ function reduce(events, opts) {
   const unseenDecisions = decisions.filter((d) => d.unseen).length;
   const unseenExtraTasks = plan.tasks.filter((t) => t.extra && (cursorTs === null || t.ts > cursorTs)).length;
 
+  const lastEvent = sessionEvents.length ? sessionEvents[sessionEvents.length - 1] : null;
+  const idleMs = lastEvent ? Math.round(now - Date.parse(lastEvent.ts)) : null;
+
   return {
     sessionId: start ? start.payload.session_id : null,
     cwd: opts.cwd,
     model: start ? start.payload.model : null,
     branch: start ? start.payload.branch : null,
-    status: computeStatus(sessionEvents, needsYou),
+    status: computeStatus(sessionEvents, needsYou, now),
     startedAt: start ? start.ts : null,
-    updatedAt: sessionEvents.length ? sessionEvents[sessionEvents.length - 1].ts : null,
+    updatedAt: lastEvent ? lastEvent.ts : null,
+    idleMs,
     now: {
       goal: findGoal(sessionEvents),
       stepIndex,

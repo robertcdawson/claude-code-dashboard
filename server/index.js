@@ -10,6 +10,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const store = require('./store');
 const registry = require('./registry');
+const projectsIndex = require('./projects-index');
+const git = require('./git');
+const overview = require('./overview');
 
 const PORT = parseInt(process.env.ATTENTION_ROUTER_PORT || '4123', 10);
 const UI_DIR = path.join(__dirname, '..', 'ui');
@@ -72,6 +75,13 @@ async function handleEvent(req, res) {
   if (!cwd) return sendJson(res, 400, { error: 'payload.cwd is required' });
   if (!store.isEnabled(cwd)) return sendJson(res, 200, { ok: true, disabled: true });
 
+  try {
+    projectsIndex.record(cwd);
+  } catch {
+    // the cross-project index is a convenience, not the source of truth;
+    // never let it break event handling
+  }
+
   const state = registry.appendEvent(cwd, envelope);
   registry.broadcast(cwd, state);
   sendJson(res, 200, { ok: true });
@@ -102,6 +112,80 @@ async function handleAction(req, res) {
   const state = registry.recompute(cwd);
   registry.broadcast(cwd, state);
   sendJson(res, 200, { ok: true, state });
+}
+
+// Cross-project overview: git.summary() shells out, so we cache results
+// per-cwd for a short window rather than re-shelling on every poll of a page
+// that may be showing many projects at once. Lives here, not in git.js,
+// which stays pure/side-effect-free (see docs/plans/cross-project-overview.md
+// decision 9).
+const GIT_TTL_MS = 30000;
+const gitCache = new Map(); // cwd -> { at, value }
+
+// Runs fn over items with at most `limit` in flight at once, so a large
+// project count doesn't spawn dozens of git processes simultaneously.
+async function mapWithConcurrency(items, limit, fn) {
+  for (let i = 0; i < items.length; i += limit) {
+    await Promise.all(items.slice(i, i + limit).map(fn));
+  }
+}
+
+// Refreshes the cache entry for any cwd whose entry is missing or stale,
+// running the underlying git spawns concurrently (bounded) rather than the
+// serial-per-project sync calls this replaced.
+async function refreshGitCache(cwds, now) {
+  const stale = cwds.filter((cwd) => {
+    const cached = gitCache.get(cwd);
+    return !(cached && now - cached.at < GIT_TTL_MS);
+  });
+  await mapWithConcurrency(stale, 8, async (cwd) => {
+    const value = await git.summaryAsync(cwd);
+    gitCache.set(cwd, { at: now, value });
+  });
+}
+
+function cachedGitSummary(cwd) {
+  const cached = gitCache.get(cwd);
+  return cached
+    ? cached.value
+    : { isRepo: false, branch: null, changedFiles: 0, lastCommitSubject: null, lastCommitAt: null };
+}
+
+function countPendingDirectives(cwd) {
+  try {
+    const entries = store.readInbox(cwd);
+    return entries.filter((e) => !e.delivered).length;
+  } catch {
+    return 0;
+  }
+}
+
+async function handleOverview(req, res) {
+  const now = Date.now();
+  const cwds = new Set();
+  for (const p of projectsIndex.list()) cwds.add(p.cwd);
+  for (const cwd of registry.projects.keys()) cwds.add(cwd);
+
+  const existing = [...cwds].filter((cwd) => fs.existsSync(cwd));
+  await refreshGitCache(existing, now);
+
+  const summaries = [];
+  for (const cwd of existing) {
+    try {
+      const registered = registry.projects.get(cwd);
+      const state = registered && registered.state ? registered.state : store.readState(cwd);
+      const hydrated = Boolean(state);
+      const pendingDirectives = countPendingDirectives(cwd);
+      const gitInfo = cachedGitSummary(cwd);
+      const label = path.basename(cwd);
+      summaries.push(
+        overview.summarizeProject(state, gitInfo, { cwd, label, hydrated, pendingDirectives, now })
+      );
+    } catch {
+      // one bad project should never break the whole overview
+    }
+  }
+  sendJson(res, 200, overview.sortSummaries(summaries));
 }
 
 function handleState(req, res, query) {
@@ -152,14 +236,30 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && url.pathname === '/state') return handleState(req, res, query);
   if (req.method === 'GET' && url.pathname === '/stream') return handleStream(req, res, query);
   if (req.method === 'GET' && url.pathname === '/api/projects') return sendJson(res, 200, registry.listProjects());
+  if (req.method === 'GET' && url.pathname === '/api/overview') return handleOverview(req, res).catch((e) => sendJson(res, 500, { error: String(e) }));
   if (req.method === 'GET') return serveStatic(req, res, url.pathname);
   sendJson(res, 405, { error: 'method not allowed' });
 });
 
+// Runs a bounded, depth-1 discovery pass over likely project directories and
+// records anything found in the cross-project index. Only ever invoked when
+// the server is actually started (see the require.main guard below) so that
+// requiring this module in tests never touches the filesystem beyond what a
+// test explicitly asks for.
+function bootstrapProjects() {
+  try {
+    projectsIndex.discover({ roots: projectsIndex.defaultRoots() });
+  } catch {
+    // discovery is best-effort; never block startup on it
+  }
+}
+
 if (require.main === module) {
+  bootstrapProjects();
   server.listen(PORT, () => {
     process.stdout.write(`attention-router listening on http://localhost:${PORT}\n`);
   });
 }
 
 module.exports = server;
+module.exports.bootstrapProjects = bootstrapProjects;
