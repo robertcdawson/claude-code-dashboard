@@ -1,7 +1,7 @@
 {
   "name": "attention-router",
   "displayName": "Attention Router",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Supervise a running Claude Code session from a browser tab or phone — state, not log. Zero-config local dashboard, no external services.",
   "author": {
     "name": "DailyLexicon"

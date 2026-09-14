@@ -1,6 +1,6 @@
 # Plan: Cross-project Overview page (v0.1.3)
 
-Status: DRAFTED 2026-09-13, awaiting user approval. Prerequisite (accuracy
+Status: IMPLEMENTED 2026-09-13 (approved same day). Prerequisite (accuracy
 fixes, v0.1.2) is implemented and verified in the working tree.
 
 ## Goal

@@ -32,7 +32,7 @@
 *{box-sizing:border-box;margin:0;padding:0}
 html{font-size:16px}
 body{background:var(--bg);color:var(--ink);font-family:var(--body);line-height:1.5;
-  min-height:100vh;padding-bottom:32px;transition:background .3s,color .3s}
+  min-height:100vh;min-width:0;padding:0 16px 32px;transition:background .3s,color .3s}
 @media (prefers-reduced-motion:reduce){ body{transition:none} }
 button{font:inherit;cursor:pointer;background:none;border:none;color:inherit}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
@@ -62,7 +62,7 @@ header{padding:20px 0 4px;display:flex;flex-direction:column;gap:10px}
 .theme-toggle{color:var(--faint);font-size:.78rem;font-weight:600;border:1px solid var(--line);
   border-radius:999px;padding:5px 12px;transition:color .15s,border-color .15s}
 .theme-toggle:hover{color:var(--ink);border-color:var(--faint)}
-h1{font-size:1.15rem;line-height:1.35}
+h1{font-size:1.15rem;line-height:1.35;overflow-wrap:anywhere;word-break:break-word}
 
 /* catch-up button = master control */
 #ack{width:100%;display:flex;align-items:center;gap:12px;text-align:left;
@@ -141,15 +141,42 @@ details[open].plan summary .chev{transform:rotate(90deg)}
   border-radius:3px;background:var(--accent)}
 .dec .d-new{color:var(--accent);font-weight:600}
 
-/* Session picker */
-.picker-list{list-style:none;display:flex;flex-direction:column}
-.picker-list li{border-top:1px solid var(--line)}
-.picker-list li:first-child{border-top:none}
-.picker-list a{display:flex;align-items:center;gap:10px;padding:12px 4px;color:var(--ink);text-decoration:none}
-.picker-list .p-label{font-weight:600}
-.picker-list .p-status{margin-left:auto;font-size:.8rem;color:var(--mut)}
-.picker-list .p-badge{background:var(--accent);color:#fff;font-size:.72rem;font-weight:600;
-  padding:2px 8px;border-radius:99px}
+/* ── Cross-project overview ── */
+.ov-refreshed{color:var(--faint);font-size:.78rem;margin-left:auto}
+.ov-summary{color:var(--mut);font-size:.92rem;margin-top:2px}
+.ov-back{display:inline-block;color:var(--mut);font-size:.82rem;font-weight:600;
+  text-decoration:none;margin-bottom:6px;overflow-wrap:anywhere}
+.ov-back:hover{color:var(--ink)}
+
+.ov-divider{color:var(--mut);font-size:.72rem;font-weight:600;text-transform:uppercase;
+  letter-spacing:.08em;padding-top:14px;margin-top:6px;border-top:1px solid var(--line);
+  grid-column:1/-1}
+.ov-divider[hidden]{display:none}
+
+.ov-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;
+  width:100%;min-width:0}
+.ov-card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+  padding:16px 18px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:8px;
+  text-decoration:none;color:inherit;transition:transform .15s,background .3s,border-color .3s;
+  min-width:0;overflow-wrap:anywhere;word-break:break-word}
+.ov-card:hover{transform:translateY(-2px);border-color:var(--faint)}
+.ov-card.ov-stale{opacity:.6}
+.ov-head{display:flex;align-items:center;gap:10px}
+.ov-label{font-weight:600;font-family:var(--display)}
+.ov-head .pill{margin-left:auto;font-size:.72rem;padding:4px 10px}
+.ov-time{color:var(--faint);font-size:.78rem}
+.ov-goal{font-size:.92rem}
+.ov-line{font-size:.86rem;color:var(--mut)}
+.ov-git{color:var(--faint)}
+.ov-mut{color:var(--faint)}
+.ov-warn{color:var(--red);font-weight:600}
+.ov-tasks{list-style:none;display:flex;flex-direction:column;gap:2px;margin-left:2px}
+.ov-tasks li{font-size:.82rem;color:var(--mut);padding-left:12px;position:relative}
+.ov-tasks li::before{content:"·";position:absolute;left:0}
+
+@media (max-width:720px){
+  .ov-cards{grid-template-columns:1fr}
+}
 
 /* ── Drill-down sheet ── */
 #scrim{position:fixed;inset:0;background:rgba(32,41,58,.4);opacity:0;pointer-events:none;

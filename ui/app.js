@@ -2,18 +2,21 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
-  const views = { picker: $('picker'), dashboard: $('dashboard'), empty: $('empty-state') };
+  const views = { overview: $('overview'), dashboard: $('dashboard'), empty: $('empty-state') };
+  let currentView = null;
   function showView(name) {
+    currentView = name;
     for (const [key, el] of Object.entries(views)) el.hidden = key !== name;
   }
 
   // ── Theme toggle ─────────────────────────────────────────────
-  const themeBtn = $('theme-toggle');
+  const themeBtns = [$('theme-toggle'), $('theme-toggle-ov')].filter(Boolean);
   function refreshThemeLabel() {
     const setting = window.AttentionTheme.getSetting();
-    themeBtn.textContent = setting[0].toUpperCase() + setting.slice(1);
+    const label = setting[0].toUpperCase() + setting.slice(1);
+    for (const btn of themeBtns) btn.textContent = label;
   }
-  themeBtn.addEventListener('click', () => window.AttentionTheme.cycleSetting());
+  for (const btn of themeBtns) btn.addEventListener('click', () => window.AttentionTheme.cycleSetting());
   document.addEventListener('attention-theme-change', refreshThemeLabel);
   window.AttentionTheme.evaluate();
   refreshThemeLabel();
@@ -28,29 +31,99 @@
 
   async function boot() {
     if (cwd) return connect(cwd);
-    let projects;
+    return loadOverview();
+  }
+
+  async function loadOverview() {
+    let list;
     try {
-      projects = await fetch('/api/projects').then((r) => r.json());
+      list = await fetch('/api/overview').then((r) => r.json());
     } catch {
-      projects = [];
+      $('ov-refreshed').textContent = "couldn't refresh";
+      return;
     }
-    if (projects.length === 0) return showView('empty');
-    if (projects.length === 1) {
-      cwd = projects[0].cwd;
-      return connect(cwd);
+    if (!Array.isArray(list)) {
+      $('ov-refreshed').textContent = "couldn't refresh";
+      return;
     }
-    showView('picker');
-    const list = $('picker-list');
-    list.innerHTML = '';
-    for (const p of projects) {
-      const li = document.createElement('li');
-      const a = document.createElement('a');
-      a.href = projectUrl(p.cwd);
-      a.innerHTML = `<span class="p-label">${escapeHtml(p.label)}</span><span class="p-status">${escapeHtml(p.status)}</span>` +
-        (p.unseenCount ? `<span class="p-badge">${p.unseenCount}</span>` : '');
-      li.appendChild(a);
-      list.appendChild(li);
+    if (list.length === 0) return showView('empty');
+    showView('overview');
+    renderOverview(list);
+    $('ov-refreshed').textContent = `Refreshed ${timeAgo(new Date().toISOString())}`;
+  }
+
+  const STATUS_LABEL_OV = { working: 'Working', needs_you: 'Needs you', finished: 'Finished', idle: 'Idle' };
+  function ovStatusLabel(p) {
+    if (p.status === 'stale') return 'Quiet · ' + timeAgo(p.lastActivityAt);
+    return STATUS_LABEL_OV[p.status] || p.status;
+  }
+
+  function renderOverview(list) {
+    const activeCount = list.filter((p) => p.status === 'working' || p.status === 'needs_you').length;
+    const needYouCount = list.filter((p) => p.attention.needsYou).length;
+    $('ov-summary').textContent = `${list.length} project${list.length === 1 ? '' : 's'} · ${activeCount} active · ${needYouCount} need you`;
+
+    const container = $('ov-cards');
+    const divider = $('ov-stale-divider');
+    container.innerHTML = '';
+    let dividerPlaced = false;
+    for (const p of list) {
+      if (p.flags.stale && !dividerPlaced) {
+        divider.hidden = false;
+        container.appendChild(divider);
+        dividerPlaced = true;
+      }
+      container.appendChild(buildOverviewCard(p));
     }
+    if (!dividerPlaced) divider.hidden = true;
+  }
+
+  function buildOverviewCard(p) {
+    const a = document.createElement('a');
+    a.className = 'ov-card' + (p.flags.stale ? ' ov-stale' : '');
+    a.href = projectUrl(p.cwd);
+    a.dataset.status = p.status;
+
+    const inProcess = (p.status === 'working' || p.status === 'needs_you' || p.status === 'stale')
+      ? `<p class="ov-line">In process: ${escapeHtml(p.now.doing || '—')}` +
+        (p.now.totalCount > 0 ? ` <span class="ov-mut">(${p.now.doneCount}/${p.now.totalCount})</span>` : '') +
+        `</p>`
+      : '';
+
+    const planExtras = [];
+    if (p.attention.pendingDirectives > 0) planExtras.push(`${p.attention.pendingDirectives} directive${p.attention.pendingDirectives === 1 ? '' : 's'} pending`);
+    if (p.attention.unseenCount > 0) planExtras.push(`${p.attention.unseenCount} new`);
+    let planBlock;
+    if (p.plan.hasPlan) {
+      const items = p.plan.openTasks.map((t) => `<li>${escapeHtml(t)}</li>`).join('');
+      planBlock = `<p class="ov-line">Action items: ${p.plan.openCount} open${planExtras.length ? ' · ' + planExtras.map(escapeHtml).join(' · ') : ''}</p>` +
+        (items ? `<ul class="ov-tasks">${items}</ul>` : '');
+    } else {
+      planBlock = `<p class="ov-line">Action items: No plan${planExtras.length ? ' · ' + planExtras.map(escapeHtml).join(' · ') : ''}</p>`;
+    }
+
+    const gitParts = [];
+    gitParts.push(p.git.isRepo ? escapeHtml(p.git.branch || '') : 'not a git repo');
+    if (p.git.isRepo && p.git.changedFiles > 0) {
+      gitParts.push(`<span class="${p.flags.leftDirty ? 'ov-warn' : ''}">${p.git.changedFiles} uncommitted</span>`);
+    }
+    if (p.git.isRepo && p.git.lastCommitSubject) {
+      gitParts.push(`${escapeHtml(p.git.lastCommitSubject)} · ${timeAgo(p.git.lastCommitAt)}`);
+    }
+    const gitLine = `<p class="ov-line ov-git">${gitParts.join(' · ')}</p>`;
+
+    a.innerHTML = `
+      <div class="ov-head">
+        <span class="ov-label">${escapeHtml(p.label)}</span>
+        <span class="pill" data-status="${escapeHtml(p.status)}"><span class="dot" aria-hidden="true"></span>${escapeHtml(ovStatusLabel(p))}</span>
+      </div>
+      <p class="ov-time num">${p.lastActivityAt ? timeAgo(p.lastActivityAt) : 'never'}</p>
+      <p class="ov-goal ${p.goal ? '' : 'ov-mut'}">${escapeHtml(p.goal || 'No goal recorded')}</p>
+      ${inProcess}
+      ${planBlock}
+      ${gitLine}
+    `;
+    return a;
   }
 
   function escapeHtml(s) {
@@ -80,6 +153,7 @@
   setInterval(() => {
     if (currentState && currentState.startedAt) renderElapsed(currentState);
     if (cwd) refreshState();
+    if (currentView === 'overview') loadOverview();
   }, 30000);
 
   async function refreshState() {
@@ -214,10 +288,18 @@
   }
 
   function timeAgo(iso) {
+    if (!iso) return 'never';
     const mins = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
     if (mins < 1) return 'just now';
     if (mins < 60) return `${mins} min ago`;
-    return `${Math.floor(mins / 60)}h ago`;
+    const hours = mins / 60;
+    if (hours < 24) return `${Math.floor(hours)}h ago`;
+    const days = hours / 24;
+    if (days < 7) return `${Math.floor(days)} d ago`;
+    const weeks = days / 7;
+    if (weeks < 5) return `${Math.floor(weeks)} w ago`;
+    const months = days / 30;
+    return `${Math.floor(months)} mo ago`;
   }
 
   function renderHealth(state) {

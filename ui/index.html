@@ -11,14 +11,19 @@
 </head>
 <body>
 
-<div class="wrap" id="picker" hidden>
+<div class="wrap" id="overview" hidden>
   <header>
-    <div class="titleblock"><h1>Attention Router</h1></div>
+    <div class="statusline">
+      <span class="ov-refreshed num" id="ov-refreshed">—</span>
+      <button class="theme-toggle" id="theme-toggle-ov" type="button" aria-label="Change color theme">Auto</button>
+    </div>
+    <div class="titleblock">
+      <h1>Projects</h1>
+      <p class="ov-summary" id="ov-summary">Loading…</p>
+    </div>
   </header>
-  <section class="card" aria-labelledby="h-picker">
-    <h2 id="h-picker">Active projects</h2>
-    <ul class="picker-list" id="picker-list"></ul>
-  </section>
+  <div class="ov-divider" id="ov-stale-divider" hidden>Stale · no activity in 7+ days</div>
+  <div id="ov-cards" class="ov-cards"></div>
 </div>
 
 <div class="wrap" id="dashboard" hidden>
@@ -29,6 +34,7 @@
       <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Change color theme">Auto</button>
     </div>
     <div class="titleblock">
+      <a class="ov-back" href="./">← All projects</a>
       <h1 id="goal">Loading…</h1>
     </div>
     <button id="ack" aria-live="polite">

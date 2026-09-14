@@ -88,7 +88,9 @@ To open the dashboard from inside a session:
 
 This makes sure the daemon is running and opens `http://localhost:4123` with
 your platform's default opener (falls back to printing the URL if none is
-found, e.g. in a headless environment).
+found, e.g. in a headless environment). Every session start also prints the
+dashboard URL as a one-line system message, so it's visible even if you
+never run the open command.
 
 ## Running it standalone (development)
 
@@ -101,9 +103,29 @@ No dependencies to install — everything is Node built-ins. Requires Node
 `>=20`.
 
 `GET /health`, `GET /state?cwd=...`, `GET /stream?cwd=...` (SSE),
-`GET /api/projects`, `POST /event`, and `POST /action` are the whole server
-API. With exactly one active project, `?cwd=` can be omitted from `/state`
-and `/stream`; with more than one, `/` shows a session picker.
+`GET /api/projects`, `GET /api/overview`, `POST /event`, and `POST /action`
+are the whole server API. With exactly one active project, `?cwd=` can be
+omitted from `/state` and `/stream`. `/` is now always the cross-project
+overview; the per-project view lives at `/?cwd=...`. `/api/projects` is
+superseded by `/api/overview`, which is what `/` renders.
+
+## Cross-project overview
+
+`/` (`http://localhost:4123`) lists every project the server has ever seen
+an event from, one card per project: status, last activity, goal, an
+in-process line (what it's doing plus a done/total count), open plan tasks
+(or "No plan"), pending directives, and git info (branch, uncommitted-file
+count, last commit), plus a "left dirty" flag for a project with
+uncommitted changes that isn't currently working or waiting on you.
+
+Projects are remembered in `~/.attention-router/projects.json` and
+rediscovered at daemon start by scanning one level under `~/Developer` plus
+any directories in `ATTENTION_ROUTER_SCAN_DIRS` (colon-separated) — a
+directory counts as a project once it has a
+`.claude/attention/events.jsonl`. A project with no activity for 7 days is
+grouped as stale, below a divider. The overview polls every 30 seconds and
+never replays event logs — it reads each project's already-reduced
+`state.json`.
 
 ## Configuration
 
@@ -111,6 +133,16 @@ and `/stream`; with more than one, `/` shows a session picker.
 - **Kill switch**: set `ATTENTION_ROUTER=off` in the environment, or write
   `{"enabled": false}` to `.claude/attention/config.json` in the supervised
   project — every hook exits immediately, no-op.
+- **Extra scan directories**: `ATTENTION_ROUTER_SCAN_DIRS`
+  (colon-separated) — additional roots scanned one level deep at daemon
+  start for the cross-project overview, alongside `~/Developer`.
+- **Runtime directory**: `ATTENTION_ROUTER_HOME` overrides
+  `~/.attention-router`, where the daemon's pidfile and the cross-project
+  index (`projects.json`) live. Mainly used by tests.
+
+A project with no `plan.md` and no TodoWrite tasks shows "No plan" rather
+than a fabricated empty plan. A session goes `stale` after 10 minutes with
+no new events, rather than staying `working` indefinitely.
 - **Dark mode**: a three-way setting (Auto / Light / Dark) in the header,
   persisted in `localStorage`. Auto computes local sunrise/sunset in the
   browser with the NOAA solar-position algorithm (`ui/sun-math.js`, no

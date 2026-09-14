@@ -29,3 +29,11 @@ no npm install, `npm test` runs `node --test`. See README.md for architecture.
 - **Verifier runs against a copy of the working tree.** Nothing is committed
   until the user asks; a "fresh clone" gate is simulated with rsync excluding
   `.git` and `.claude`.
+- **Grid/flex cards need `min-width:0` and `overflow-wrap:anywhere`.** Card
+  text comes from raw prompts, shell commands and paths, so an unbroken
+  120-char token will otherwise push the whole grid past a 400 px viewport.
+  Verify with `scrollWidth <= innerWidth` at 400 px, not by eye.
+- **Never shell out to git synchronously per project on a request path.**
+  ~7 sequential spawns × 13 projects was 6.5 s cold. Use `git.summaryAsync`
+  (≤3 spawns, `execFile`, `Promise.all`) behind the 30 s cache in
+  `server/index.js`; gate is < 2 s cold, < 0.5 s warm on `/api/overview`.
