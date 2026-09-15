@@ -120,7 +120,12 @@ async function handleAction(req, res) {
 // which stays pure/side-effect-free (see docs/plans/cross-project-overview.md
 // decision 9).
 const GIT_TTL_MS = 30000;
-const gitCache = new Map(); // cwd -> { at, value }
+// Never-seen candidates are discovered on disk, not reported by a live
+// session, so their git state changes far less often from our point of
+// view — give them a much longer cache window to keep them from dominating
+// the concurrency-limited refresh pass on every poll.
+const GIT_TTL_IDLE_MS = 300000;
+const gitCache = new Map(); // cwd -> { at, value, ttl }
 
 // Runs fn over items with at most `limit` in flight at once, so a large
 // project count doesn't spawn dozens of git processes simultaneously.
@@ -132,15 +137,19 @@ async function mapWithConcurrency(items, limit, fn) {
 
 // Refreshes the cache entry for any cwd whose entry is missing or stale,
 // running the underlying git spawns concurrently (bounded) rather than the
-// serial-per-project sync calls this replaced.
-async function refreshGitCache(cwds, now) {
+// serial-per-project sync calls this replaced. `neverSeen` (a Set) marks
+// cwds that get the longer idle TTL; the ttl is fixed at write time, so a
+// cwd that later gets recorded keeps its old cache entry's ttl until that
+// entry naturally expires.
+async function refreshGitCache(cwds, now, neverSeen) {
   const stale = cwds.filter((cwd) => {
     const cached = gitCache.get(cwd);
-    return !(cached && now - cached.at < GIT_TTL_MS);
+    return !(cached && now - cached.at < cached.ttl);
   });
   await mapWithConcurrency(stale, 8, async (cwd) => {
     const value = await git.summaryAsync(cwd);
-    gitCache.set(cwd, { at: now, value });
+    const ttl = neverSeen && neverSeen.has(cwd) ? GIT_TTL_IDLE_MS : GIT_TTL_MS;
+    gitCache.set(cwd, { at: now, value, ttl });
   });
 }
 
@@ -160,26 +169,56 @@ function countPendingDirectives(cwd) {
   }
 }
 
+const MAX_NEVER_SEEN = 40;
+
 async function handleOverview(req, res) {
   const now = Date.now();
   const cwds = new Set();
   for (const p of projectsIndex.list()) cwds.add(p.cwd);
   for (const cwd of registry.projects.keys()) cwds.add(cwd);
 
+  // Bounded set of git-repo candidates on disk that have never posted an
+  // event: appended after the seen union so they never displace or
+  // duplicate an already-indexed/registered project.
+  const neverSeen = new Set();
+  try {
+    for (const { cwd } of projectsIndex.listCandidates()) {
+      if (cwds.has(cwd)) continue;
+      if (neverSeen.size >= MAX_NEVER_SEEN) break;
+      neverSeen.add(cwd);
+      cwds.add(cwd);
+    }
+  } catch {
+    // discovery is best-effort; never let it break the overview
+  }
+
   const existing = [...cwds].filter((cwd) => fs.existsSync(cwd));
-  await refreshGitCache(existing, now);
+  await refreshGitCache(existing, now, neverSeen);
 
   const summaries = [];
   for (const cwd of existing) {
     try {
-      const registered = registry.projects.get(cwd);
-      const state = registered && registered.state ? registered.state : store.readState(cwd);
-      const hydrated = Boolean(state);
-      const pendingDirectives = countPendingDirectives(cwd);
+      const isNeverSeen = neverSeen.has(cwd);
+      let state = null;
+      let hydrated = false;
+      let pendingDirectives = 0;
+      if (!isNeverSeen) {
+        const registered = registry.projects.get(cwd);
+        state = registered && registered.state ? registered.state : store.readState(cwd);
+        hydrated = Boolean(state);
+        pendingDirectives = countPendingDirectives(cwd);
+      }
       const gitInfo = cachedGitSummary(cwd);
       const label = path.basename(cwd);
       summaries.push(
-        overview.summarizeProject(state, gitInfo, { cwd, label, hydrated, pendingDirectives, now })
+        overview.summarizeProject(state, gitInfo, {
+          cwd,
+          label,
+          hydrated,
+          pendingDirectives,
+          now,
+          neverSeen: isNeverSeen,
+        })
       );
     } catch {
       // one bad project should never break the whole overview

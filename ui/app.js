@@ -9,6 +9,16 @@
     for (const [key, el] of Object.entries(views)) el.hidden = key !== name;
   }
 
+  // Captured once, up front, while still attached to their initial parent.
+  // renderOverview() moves these dividers in and out of #ov-cards on every
+  // poll; re-fetching them via document.getElementById() on a later poll
+  // would return null once a poll with no matching rows has detached them
+  // (getElementById only finds elements still connected to the document —
+  // a plain JS reference survives detachment, so we hold that instead).
+  const ovCardsContainer = $('ov-cards');
+  const ovStaleDivider = $('ov-stale-divider');
+  const ovNeverDivider = $('ov-never-divider');
+
   // ── Theme toggle ─────────────────────────────────────────────
   const themeBtns = [$('theme-toggle'), $('theme-toggle-ov')].filter(Boolean);
   function refreshThemeLabel() {
@@ -50,39 +60,93 @@
     showView('overview');
     renderOverview(list);
     $('ov-refreshed').textContent = `Refreshed ${timeAgo(new Date().toISOString())}`;
+    renderHooksFreshness(list);
   }
 
-  const STATUS_LABEL_OV = { working: 'Working', needs_you: 'Needs you', finished: 'Finished', idle: 'Idle' };
+  const STATUS_LABEL_OV = { working: 'Working', needs_you: 'Needs you', finished: 'Finished', idle: 'Idle', never_seen: 'Never seen' };
   function ovStatusLabel(p) {
     if (p.status === 'stale') return 'Quiet · ' + timeAgo(p.lastActivityAt);
     return STATUS_LABEL_OV[p.status] || p.status;
   }
 
+  function renderHooksFreshness(list) {
+    const el = $('ov-hooks');
+    if (!el) return;
+    let lastEvent = null;
+    for (const p of list) {
+      if (!p.lastActivityAt) continue;
+      const t = Date.parse(p.lastActivityAt);
+      if (Number.isNaN(t)) continue;
+      if (lastEvent === null || t > lastEvent) lastEvent = t;
+    }
+    const dayMs = 24 * 60 * 60 * 1000;
+    const isStale = lastEvent === null || (Date.now() - lastEvent) > dayMs;
+    el.classList.toggle('ov-hooks-warn', isStale);
+    if (lastEvent === null) {
+      el.textContent = 'Hooks: no events yet — is the plugin enabled? Run /plugin';
+    } else if (isStale) {
+      el.textContent = `Hooks: no events in ${timeAgo(new Date(lastEvent).toISOString())} — is the plugin enabled? Run /plugin`;
+    } else {
+      el.textContent = `Hooks: last event ${timeAgo(new Date(lastEvent).toISOString())}`;
+    }
+  }
+
   function renderOverview(list) {
     const activeCount = list.filter((p) => p.status === 'working' || p.status === 'needs_you').length;
     const needYouCount = list.filter((p) => p.attention.needsYou).length;
-    $('ov-summary').textContent = `${list.length} project${list.length === 1 ? '' : 's'} · ${activeCount} active · ${needYouCount} need you`;
+    const neverSeenCount = list.filter((p) => p.flags.neverSeen).length;
+    $('ov-summary').textContent = `${list.length} project${list.length === 1 ? '' : 's'} · ${activeCount} active · ${needYouCount} need you` +
+      (neverSeenCount > 0 ? ` · ${neverSeenCount} never seen` : '');
 
-    const container = $('ov-cards');
-    const divider = $('ov-stale-divider');
+    const container = ovCardsContainer;
     container.innerHTML = '';
-    let dividerPlaced = false;
+    let stalePlaced = false;
+    let neverPlaced = false;
     for (const p of list) {
-      if (p.flags.stale && !dividerPlaced) {
-        divider.hidden = false;
-        container.appendChild(divider);
-        dividerPlaced = true;
+      if (p.flags.neverSeen && !neverPlaced) {
+        ovNeverDivider.hidden = false;
+        container.appendChild(ovNeverDivider);
+        neverPlaced = true;
+      } else if (p.flags.stale && !neverPlaced && !stalePlaced) {
+        ovStaleDivider.hidden = false;
+        container.appendChild(ovStaleDivider);
+        stalePlaced = true;
       }
       container.appendChild(buildOverviewCard(p));
     }
-    if (!dividerPlaced) divider.hidden = true;
+    if (!stalePlaced) ovStaleDivider.hidden = true;
+    if (!neverPlaced) ovNeverDivider.hidden = true;
+  }
+
+  function buildGitLine(p) {
+    const gitParts = [];
+    gitParts.push(p.git.isRepo ? escapeHtml(p.git.branch || '') : 'not a git repo');
+    if (p.git.isRepo && p.git.changedFiles > 0) {
+      gitParts.push(`<span class="${p.flags.leftDirty ? 'ov-warn' : ''}">${p.git.changedFiles} uncommitted</span>`);
+    }
+    if (p.git.isRepo && p.git.lastCommitSubject) {
+      gitParts.push(`${escapeHtml(p.git.lastCommitSubject)} · ${timeAgo(p.git.lastCommitAt)}`);
+    }
+    return `<p class="ov-line ov-git">${gitParts.join(' · ')}</p>`;
   }
 
   function buildOverviewCard(p) {
     const a = document.createElement('a');
-    a.className = 'ov-card' + (p.flags.stale ? ' ov-stale' : '');
+    a.className = 'ov-card' + (p.flags.stale ? ' ov-stale' : '') + (p.flags.neverSeen ? ' ov-never' : '');
     a.href = projectUrl(p.cwd);
     a.dataset.status = p.status;
+
+    if (p.flags.neverSeen) {
+      a.innerHTML = `
+        <div class="ov-head">
+          <span class="ov-label">${escapeHtml(p.label)}</span>
+          <span class="pill" data-status="never_seen"><span class="dot" aria-hidden="true"></span>${escapeHtml(ovStatusLabel(p))}</span>
+        </div>
+        ${buildGitLine(p)}
+        <p class="ov-line ov-mut">No Claude session has run here yet</p>
+      `;
+      return a;
+    }
 
     const inProcess = (p.status === 'working' || p.status === 'needs_you' || p.status === 'stale')
       ? `<p class="ov-line">In process: ${escapeHtml(p.now.doing || '—')}` +
@@ -102,15 +166,7 @@
       planBlock = `<p class="ov-line">Action items: No plan${planExtras.length ? ' · ' + planExtras.map(escapeHtml).join(' · ') : ''}</p>`;
     }
 
-    const gitParts = [];
-    gitParts.push(p.git.isRepo ? escapeHtml(p.git.branch || '') : 'not a git repo');
-    if (p.git.isRepo && p.git.changedFiles > 0) {
-      gitParts.push(`<span class="${p.flags.leftDirty ? 'ov-warn' : ''}">${p.git.changedFiles} uncommitted</span>`);
-    }
-    if (p.git.isRepo && p.git.lastCommitSubject) {
-      gitParts.push(`${escapeHtml(p.git.lastCommitSubject)} · ${timeAgo(p.git.lastCommitAt)}`);
-    }
-    const gitLine = `<p class="ov-line ov-git">${gitParts.join(' · ')}</p>`;
+    const gitLine = buildGitLine(p);
 
     a.innerHTML = `
       <div class="ov-head">
@@ -367,6 +423,8 @@
   let lastFocus = null;
 
   function openSheet(kind, state) {
+    if (currentView !== 'dashboard') return;
+    if (!SHEET_BUILDERS[kind]) return;
     lastFocus = document.activeElement;
     $('sheet-title').textContent = SHEET_TITLE[kind] || 'Details';
     $('sheet-body').innerHTML = '';

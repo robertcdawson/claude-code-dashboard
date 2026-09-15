@@ -71,11 +71,33 @@ function attentionFrom(state, extras) {
 }
 
 function summarizeProject(state, gitInfo, extras = {}) {
-  const { cwd, label, hydrated = false, now } = extras;
+  const { cwd, label, hydrated = false, now, neverSeen = false } = extras;
+  const git = normalizeGit(gitInfo);
+
+  // A candidate discovered on disk that the server has never recorded an
+  // event for: no state to read, so every derived field is a fixed zero
+  // shape rather than a re-derivation of something that doesn't exist.
+  // leftDirty stays false here even with a dirty tree — "left dirty" implies
+  // a session was here and walked away, which never happened.
+  if (neverSeen) {
+    return {
+      cwd,
+      label: label || path.basename(cwd || ''),
+      status: 'never_seen',
+      hydrated: false,
+      lastActivityAt: null,
+      goal: null,
+      now: { doing: null, doneCount: 0, totalCount: 0 },
+      plan: { hasPlan: false, openCount: 0, openTasks: [] },
+      attention: { unseenCount: 0, needsYou: false, pendingDirectives: 0 },
+      git,
+      flags: { stale: false, leftDirty: false, neverSeen: true },
+    };
+  }
+
   const lastActivityAt = state ? state.updatedAt || null : null;
   const storedStatus = state ? state.status : 'idle';
   const { status, stale } = deriveStatus(storedStatus, lastActivityAt, now);
-  const git = normalizeGit(gitInfo);
   const leftDirty = git.changedFiles > 0 && status !== 'working' && status !== 'needs_you';
 
   return {
@@ -89,13 +111,14 @@ function summarizeProject(state, gitInfo, extras = {}) {
     plan: planFrom(state),
     attention: attentionFrom(state, extras),
     git,
-    flags: { stale, leftDirty },
+    flags: { stale, leftDirty, neverSeen: false },
   };
 }
 
 function sortRank(summary) {
   let rank = summary.attention.needsYou ? 0 : summary.status === 'working' ? 1 : 2;
   if (summary.flags.stale) rank += 10;
+  if (summary.flags.neverSeen) rank += 20;
   return rank;
 }
 
