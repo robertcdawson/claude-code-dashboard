@@ -80,6 +80,19 @@ claude --plugin-dir ./claude-code-dashboard
 Either way, once enabled, hooks fire automatically — there's no separate
 "start the server" step.
 
+**Check it's actually enabled.** A plugin can be installed but disabled, in
+which case every hook in every session silently no-ops with no error
+anywhere — nothing updates and nothing tells you why:
+
+```bash
+grep -A6 '"enabledPlugins"' ~/.claude/settings.json | grep attention-router
+```
+
+`"attention-router@attention-router-marketplace": false` means it's off.
+Flip it to `true` (or remove the line) and restart any already-running
+`claude` sessions — hooks load once at session start, so an already-running
+session keeps the old setting until it's restarted.
+
 To open the dashboard from inside a session:
 
 ```
@@ -127,18 +140,56 @@ grouped as stale, below a divider. The overview polls every 30 seconds and
 never replays event logs — it reads each project's already-reduced
 `state.json`.
 
+**Roots and Never seen.** The set of directories scanned is configurable via
+`~/.attention-router/config.json` (see Configuration below). Every poll, the
+overview also scans one level into each configured root for git repos it has
+never received an event from, and lists them below a
+"Never tracked · no Claude session here yet" divider, capped at 40 shown.
+These cards show only the project's label, git branch/uncommitted count/last
+commit, and a `Never seen` pill — no status, no plan, no in-process line,
+because none of that exists yet. This is the honest limitation of the
+overview: **presence and git state are discovered automatically by scanning
+the filesystem, but session state (status, goal, plan, activity) only exists
+once a Claude session has actually run there with hooks loaded and posted at
+least one event.** A repo you cloned five minutes ago that you haven't
+opened Claude Code in yet is real on disk, and the overview will say so —
+but it can't tell you anything about a session that has never existed.
+
+The header's `Hooks: last event …` line is a freshness check across every
+project, not just one: it shows how long ago the most recent event of any
+kind was received, and turns amber past 24 hours (or if nothing has ever
+been received) with a nudge to check `/plugin` — see
+[Check it's actually enabled](#install-as-a-plugin) above, since a globally
+disabled plugin is the most common reason this goes quiet.
+
 ## Configuration
 
 - **Port**: `ATTENTION_ROUTER_PORT` (default `4123`).
 - **Kill switch**: set `ATTENTION_ROUTER=off` in the environment, or write
   `{"enabled": false}` to `.claude/attention/config.json` in the supervised
-  project — every hook exits immediately, no-op.
+  project — every hook exits immediately, no-op. This is the **per-project**
+  config file; see the global one below, which is a different file with a
+  different job.
+- **Overview roots** (global): `~/.attention-router/config.json` —
+  `{"roots": ["~/Developer"], "recordOutsideRoots": true}` is the default
+  used when the file is missing or unreadable. `roots` (`~` expanded) is
+  where the overview scans one level deep, both for known projects and for
+  git repos it has never seen a session in ("Never seen" cards, see above).
+  `recordOutsideRoots: false` stops sessions outside every configured root
+  from being registered as tracked projects at all; leave it `true` (the
+  default) to track a session anywhere, as before.
 - **Extra scan directories**: `ATTENTION_ROUTER_SCAN_DIRS`
   (colon-separated) — additional roots scanned one level deep at daemon
-  start for the cross-project overview, alongside `~/Developer`.
+  start for the cross-project overview, merged with `config.json`'s `roots`
+  (max 8 combined).
 - **Runtime directory**: `ATTENTION_ROUTER_HOME` overrides
   `~/.attention-router`, where the daemon's pidfile and the cross-project
-  index (`projects.json`) live. Mainly used by tests.
+  index (`projects.json`, `config.json`) live. Mainly used by tests.
+
+| File | Scope | Purpose |
+| ---- | ----- | ------- |
+| `.claude/attention/config.json` | per-project | kill switch (`{"enabled": false}`) |
+| `~/.attention-router/config.json` | global | overview scan roots + `recordOutsideRoots` |
 
 A project with no `plan.md` and no TodoWrite tasks shows "No plan" rather
 than a fabricated empty plan. A session goes `stale` after 10 minutes with

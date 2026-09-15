@@ -21,6 +21,133 @@ function indexPath() {
   return path.join(homeDir(), 'projects.json');
 }
 
+function configPath() {
+  return path.join(homeDir(), 'config.json');
+}
+
+function expandTilde(p) {
+  if (typeof p !== 'string') return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
+function defaultConfig() {
+  return { roots: [path.join(os.homedir(), 'Developer')], recordOutsideRoots: true };
+}
+
+// Reads ~/.attention-router/config.json (ATTENTION_ROUTER_HOME overrides the
+// home dir). Missing or corrupt file, or a non-object body, falls back to
+// defaults. A non-array `roots` falls back to the default roots array only;
+// `recordOutsideRoots` is still honoured independently. Never throws.
+function readConfig() {
+  const file = configPath();
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return defaultConfig();
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return defaultConfig();
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return defaultConfig();
+  }
+  const roots = Array.isArray(parsed.roots)
+    ? parsed.roots.filter((r) => typeof r === 'string').map(expandTilde)
+    : defaultConfig().roots;
+  const recordOutsideRoots =
+    typeof parsed.recordOutsideRoots === 'boolean' ? parsed.recordOutsideRoots : true;
+  return { roots, recordOutsideRoots };
+}
+
+// Configured roots merged with the legacy ATTENTION_ROUTER_SCAN_DIRS env var,
+// deduped and capped at MAX_ROOTS.
+function roots() {
+  const cfg = readConfig();
+  const set = new Set(cfg.roots);
+  const scanDirs = process.env.ATTENTION_ROUTER_SCAN_DIRS;
+  if (scanDirs) {
+    for (const dir of scanDirs.split(':')) {
+      if (dir) set.add(dir);
+    }
+  }
+  return [...set].slice(0, MAX_ROOTS);
+}
+
+function hasGitEntry(dir) {
+  try {
+    fs.statSync(path.join(dir, '.git'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Direct children of each configured root that look like git repos and
+// aren't already indexed. Capped at MAX_CHILDREN per root. An unreadable
+// root is skipped silently.
+function listCandidates() {
+  const data = read();
+  const out = [];
+  for (const root of roots()) {
+    let entries;
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    let count = 0;
+    for (const entry of entries) {
+      if (count >= MAX_CHILDREN) break;
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith('.')) continue;
+      if (entry.name === 'node_modules') continue;
+      const cwd = path.join(root, entry.name);
+      if (!hasGitEntry(cwd)) continue;
+      if (isIndexed(cwd, data)) continue;
+      out.push({ cwd });
+      count += 1;
+    }
+  }
+  return out;
+}
+
+// True if `dir` is strictly inside `ancestor` (not equal to it).
+function isStrictlyInside(ancestor, dir) {
+  const rel = path.relative(ancestor, dir);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+// True if `cwd` is `root` or strictly inside it.
+function isUnderRoot(root, cwd) {
+  const rel = path.relative(root, cwd);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+// Gate for record(): rejects the home directory, the filesystem root, any
+// strict ancestor of a configured root (so scanning ~/Developer doesn't also
+// let ~ itself get recorded), and, when recordOutsideRoots is false,
+// anything not under a configured root.
+function shouldRecord(cwd) {
+  if (!cwd) return false;
+  if (cwd === os.homedir()) return false;
+  if (cwd === '/') return false;
+  const cfg = readConfig();
+  for (const root of cfg.roots) {
+    if (isStrictlyInside(cwd, root)) return false;
+  }
+  if (cfg.recordOutsideRoots === false) {
+    const underAny = roots().some((root) => isUnderRoot(root, cwd));
+    if (!underAny) return false;
+  }
+  return true;
+}
+
 function emptyIndex() {
   return { version: 1, projects: [] };
 }
@@ -52,6 +179,7 @@ function writeAtomic(data) {
 }
 
 function record(cwd, ts = new Date().toISOString()) {
+  if (!shouldRecord(cwd)) return null;
   const data = read();
   let entry = data.projects.find((p) => p.cwd === cwd);
   if (entry) {
@@ -96,6 +224,7 @@ function eventsLogFor(cwd) {
 
 function maybeRecord(cwd, data, added) {
   if (isIndexed(cwd, data)) return;
+  if (!shouldRecord(cwd)) return;
   const eventsFile = eventsLogFor(cwd);
   let stat;
   try {
@@ -138,24 +267,15 @@ function discover(opts) {
 }
 
 function defaultRoots() {
-  const roots = new Set();
+  const set = new Set();
   const data = read();
   for (const p of data.projects) {
-    roots.add(path.dirname(p.cwd));
+    set.add(path.dirname(p.cwd));
   }
-  const devDir = path.join(os.homedir(), 'Developer');
-  try {
-    if (fs.statSync(devDir).isDirectory()) roots.add(devDir);
-  } catch {
-    // ~/Developer doesn't exist; nothing to add
+  for (const r of roots()) {
+    set.add(r);
   }
-  const scanDirs = process.env.ATTENTION_ROUTER_SCAN_DIRS;
-  if (scanDirs) {
-    for (const dir of scanDirs.split(':')) {
-      if (dir) roots.add(dir);
-    }
-  }
-  return [...roots];
+  return [...set];
 }
 
 module.exports = {
@@ -165,4 +285,9 @@ module.exports = {
   list,
   discover,
   defaultRoots,
+  configPath,
+  readConfig,
+  roots,
+  listCandidates,
+  shouldRecord,
 };

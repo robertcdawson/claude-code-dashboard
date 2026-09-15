@@ -37,3 +37,24 @@ no npm install, `npm test` runs `node --test`. See README.md for architecture.
   ~7 sequential spawns × 13 projects was 6.5 s cold. Use `git.summaryAsync`
   (≤3 spawns, `execFile`, `Promise.all`) behind the 30 s cache in
   `server/index.js`; gate is < 2 s cold, < 0.5 s warm on `/api/overview`.
+- **A disabled plugin is indistinguishable from a quiet week.**
+  `enabledPlugins: false` in `~/.claude/settings.json` stops every hook in
+  every session with no error anywhere. Before debugging "why is nothing
+  updating", grep that file. The overview's amber `Hooks: last event …` line
+  exists to make this visible; hooks load at session start, so re-enabling
+  needs a restart.
+- **Never re-find a moved DOM element with getElementById.** `renderOverview`
+  moves divider elements into `#ov-cards` and `innerHTML=''` detaches them on
+  the next poll; a detached element is invisible to `getElementById`, so the
+  next lookup returns null and the render throws inside an async poll with
+  no catch. Capture such elements once at module scope. `test/ui-overview.test.js`
+  drives four poll cycles to guard this.
+- **Every write path into the project registry must go through
+  `shouldRecord`.** `record()` was gated but `discover()` (run by
+  `bootstrapProjects()` on every daemon start) wrote through `maybeRecord()`
+  and registered `~` as a project the moment the daemon restarted, because
+  `~/.claude/attention/events.jsonl` exists from a session once opened in
+  the home directory. A filter on one entry point is not a filter. When
+  adding a guard, `grep -n "projects.push\|writeAtomic"` and gate every site;
+  `test/projects-index.test.js` now runs `discover()` against the real
+  `os.homedir()` to prove it stays out.

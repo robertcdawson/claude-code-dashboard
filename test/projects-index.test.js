@@ -125,3 +125,155 @@ test('defaultRoots includes parent dirs of indexed cwds and dedupes', () => {
   assert.equal(roots.length, uniqueRoots.size);
   assert.ok(roots.includes('/tmp/some/nested'));
 });
+
+test('configPath honors ATTENTION_ROUTER_HOME set at call time', () => {
+  const dir = freshHome();
+  assert.equal(projectsIndex.configPath(), path.join(dir, 'config.json'));
+});
+
+test('readConfig() returns default roots when config file is missing', () => {
+  freshHome();
+  const cfg = projectsIndex.readConfig();
+  assert.deepEqual(cfg, {
+    roots: [path.join(os.homedir(), 'Developer')],
+    recordOutsideRoots: true,
+  });
+});
+
+test('readConfig() returns defaults on corrupt json without throwing', () => {
+  const dir = freshHome();
+  fs.writeFileSync(path.join(dir, 'config.json'), '{ not valid json');
+  assert.doesNotThrow(() => projectsIndex.readConfig());
+  const cfg = projectsIndex.readConfig();
+  assert.deepEqual(cfg, {
+    roots: [path.join(os.homedir(), 'Developer')],
+    recordOutsideRoots: true,
+  });
+});
+
+test('readConfig() expands a leading ~ in roots', () => {
+  const dir = freshHome();
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ roots: ['~/Projects'] }));
+  const cfg = projectsIndex.readConfig();
+  assert.deepEqual(cfg.roots, [path.join(os.homedir(), 'Projects')]);
+});
+
+test('readConfig() with non-array roots falls back to default roots', () => {
+  const dir = freshHome();
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ roots: 'not-an-array' }));
+  const cfg = projectsIndex.readConfig();
+  assert.deepEqual(cfg.roots, [path.join(os.homedir(), 'Developer')]);
+});
+
+test('listCandidates() returns only direct git-repo children not already indexed', () => {
+  const dir = freshHome();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-cand-'));
+  fs.mkdirSync(path.join(root, 'repo-a', '.git'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'plain-dir'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'repo-b', '.git'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'parent', 'grandchild-repo', '.git'), { recursive: true });
+
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ roots: [root] }));
+
+  // Pre-index repo-b so listCandidates() must exclude it.
+  const recorded = projectsIndex.record(path.join(root, 'repo-b'));
+  assert.notEqual(recorded, null);
+
+  const candidates = projectsIndex.listCandidates().map((c) => c.cwd);
+  assert.deepEqual(candidates, [path.join(root, 'repo-a')]);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('record(os.homedir()) is a no-op', () => {
+  const dir = freshHome();
+  const result = projectsIndex.record(os.homedir());
+  assert.equal(result, null);
+  assert.equal(fs.existsSync(path.join(dir, 'projects.json')), false);
+});
+
+test('record() rejects a strict ancestor of a configured root', () => {
+  const dir = freshHome();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-anc-'));
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ roots: [root] }));
+  const parent = path.dirname(root);
+
+  const result = projectsIndex.record(parent);
+  assert.equal(result, null);
+  const cwds = projectsIndex.list().map((p) => p.cwd);
+  assert.ok(!cwds.includes(parent));
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('record() with recordOutsideRoots:false rejects a cwd outside configured roots', () => {
+  const dir = freshHome();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-out-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-outside-'));
+  fs.writeFileSync(
+    path.join(dir, 'config.json'),
+    JSON.stringify({ roots: [root], recordOutsideRoots: false })
+  );
+
+  const rejected = projectsIndex.record(outside);
+  assert.equal(rejected, null);
+
+  const accepted = projectsIndex.record(path.join(root, 'proj'));
+  assert.notEqual(accepted, null);
+
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(outside, { recursive: true, force: true });
+});
+
+test('shouldRecord(os.homedir()) is false', () => {
+  freshHome();
+  assert.equal(projectsIndex.shouldRecord(os.homedir()), false);
+});
+
+test('discover() applies shouldRecord: a matching cwd outside the configured root is dropped when recordOutsideRoots is false', () => {
+  const dir = freshHome();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-disc-root-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-disc-outside-'));
+
+  fs.writeFileSync(
+    path.join(dir, 'config.json'),
+    JSON.stringify({ roots: [root], recordOutsideRoots: false })
+  );
+
+  // A project under the configured root: should be discovered.
+  const proj = path.join(root, 'proj');
+  fs.mkdirSync(path.join(proj, '.claude', 'attention'), { recursive: true });
+  fs.writeFileSync(path.join(proj, '.claude', 'attention', 'events.jsonl'), '{}\n');
+
+  // A cwd with a matching events.jsonl but outside any configured root:
+  // discover() must not record it even though it matches the events-file
+  // heuristic, because shouldRecord() rejects it.
+  fs.mkdirSync(path.join(outside, '.claude', 'attention'), { recursive: true });
+  fs.writeFileSync(path.join(outside, '.claude', 'attention', 'events.jsonl'), '{}\n');
+
+  const added = projectsIndex.discover({ roots: [root, outside] });
+
+  assert.deepEqual(added, [proj]);
+  const cwds = projectsIndex.list().map((p) => p.cwd);
+  assert.ok(cwds.includes(proj));
+  assert.ok(!cwds.includes(outside));
+
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(outside, { recursive: true, force: true });
+});
+
+test('discover() never records os.homedir() even when it has a matching events.jsonl', () => {
+  freshHome();
+  const home = os.homedir();
+  const homeEventsFile = path.join(home, '.claude', 'attention', 'events.jsonl');
+
+  // Only meaningful to assert on machines where this heuristic file exists;
+  // otherwise discover() would skip the home dir for an unrelated reason
+  // (no events.jsonl) and the test wouldn't exercise the shouldRecord path.
+  if (fs.existsSync(homeEventsFile)) {
+    const added = projectsIndex.discover({ roots: [home] });
+    assert.ok(!added.includes(home));
+    const cwds = projectsIndex.list().map((p) => p.cwd);
+    assert.ok(!cwds.includes(home));
+  }
+});

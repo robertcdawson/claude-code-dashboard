@@ -155,6 +155,40 @@ describe('overview: un-hydrated / missing state', () => {
     assert.deepEqual(s.git, GIT_CLEAN);
     assert.equal(s.lastActivityAt, null);
   });
+
+  test('events.jsonl but no state.json is un-hydrated, not never-seen', () => {
+    const s = summarizeProject(null, GIT_CLEAN, extras({ cwd: '/proj/events-only', hydrated: false }));
+    assert.equal(s.hydrated, false);
+    assert.equal(s.flags.neverSeen, false);
+    assert.notEqual(s.status, 'never_seen');
+  });
+});
+
+describe('overview: never-seen candidates', () => {
+  test('never-seen shape: status, flags, goal, lastActivityAt, now/plan/attention all zeroed', () => {
+    const s = summarizeProject(null, GIT_CLEAN, extras({ cwd: '/proj/candidate', neverSeen: true }));
+    assert.equal(s.status, 'never_seen');
+    assert.deepEqual(s.flags, { stale: false, leftDirty: false, neverSeen: true });
+    assert.equal(s.goal, null);
+    assert.equal(s.lastActivityAt, null);
+    assert.equal(s.hydrated, false);
+    assert.deepEqual(s.now, { doing: null, doneCount: 0, totalCount: 0 });
+    assert.deepEqual(s.plan, { hasPlan: false, openCount: 0, openTasks: [] });
+    assert.deepEqual(s.attention, { unseenCount: 0, needsYou: false, pendingDirectives: 0 });
+    assert.deepEqual(s.git, GIT_CLEAN);
+  });
+
+  test('leftDirty stays false for a never-seen candidate even with a dirty tree', () => {
+    const s = summarizeProject(null, GIT_DIRTY, extras({ cwd: '/proj/candidate-dirty', neverSeen: true }));
+    assert.equal(s.status, 'never_seen');
+    assert.equal(s.flags.leftDirty, false);
+    assert.equal(s.git.changedFiles, 3);
+  });
+
+  test('a normal (non-never-seen) entry always carries flags.neverSeen === false', () => {
+    const s = summarizeProject(STATE_WORKING, GIT_CLEAN, extras());
+    assert.equal(s.flags.neverSeen, false);
+  });
 });
 
 describe('overview: sortSummaries', () => {
@@ -189,6 +223,26 @@ describe('overview: sortSummaries', () => {
       ['/p/needs-you', '/p/working', '/p/recent-finished', '/p/stale', '/p/older-finished', '/p/null-entry']
     );
   });
+
+  test('never-seen sorts after an idle entry and after a stale entry', () => {
+    const idle = summarizeProject(STATE_NOPLAN, GIT_CLEAN, extras({ cwd: '/p/idle', now: BASE_MS }));
+    const staleWorking = summarizeProject(
+      { ...STATE_BOUNDARY, updatedAt: '2026-01-01T11:40:00.000Z' },
+      GIT_CLEAN,
+      extras({ cwd: '/p/stale-2', now: BASE_MS })
+    );
+    const candidate = summarizeProject(null, GIT_CLEAN, extras({ cwd: '/p/candidate', neverSeen: true }));
+
+    assert.equal(idle.status, 'idle');
+    assert.equal(staleWorking.status, 'stale');
+
+    const sorted = sortSummaries([candidate, staleWorking, idle]);
+
+    assert.deepEqual(
+      sorted.map((s) => s.cwd),
+      ['/p/idle', '/p/stale-2', '/p/candidate']
+    );
+  });
 });
 
 function httpJson(method, port, urlPath, body) {
@@ -212,6 +266,40 @@ function httpJson(method, port, urlPath, body) {
     if (data) req.write(data);
     req.end();
   });
+}
+
+const OVERVIEW_REQUIRED_KEYS = [
+  ['cwd'],
+  ['label'],
+  ['status'],
+  ['hydrated'],
+  ['lastActivityAt'],
+  ['goal'],
+  ['now', 'doing'],
+  ['now', 'doneCount'],
+  ['now', 'totalCount'],
+  ['plan', 'hasPlan'],
+  ['plan', 'openCount'],
+  ['plan', 'openTasks'],
+  ['attention', 'unseenCount'],
+  ['attention', 'needsYou'],
+  ['attention', 'pendingDirectives'],
+  ['git', 'isRepo'],
+  ['git', 'branch'],
+  ['git', 'changedFiles'],
+  ['git', 'lastCommitSubject'],
+  ['git', 'lastCommitAt'],
+  ['flags', 'stale'],
+  ['flags', 'leftDirty'],
+  ['flags', 'neverSeen'],
+];
+
+function assertRequiredKeys(entry) {
+  for (const keyPath of OVERVIEW_REQUIRED_KEYS) {
+    let value = entry;
+    for (const key of keyPath) value = value ? value[key] : undefined;
+    assert.notStrictEqual(value, undefined, `expected ${keyPath.join('.')} to be defined`);
+  }
 }
 
 describe('GET /api/overview: integration', () => {
@@ -253,37 +341,75 @@ describe('GET /api/overview: integration', () => {
     const entry = overviewRes.body.find((p) => p.cwd === projectDir);
     assert.ok(entry, 'expected an overview entry for the posted project');
 
-    const requiredKeys = [
-      ['cwd'],
-      ['label'],
-      ['status'],
-      ['hydrated'],
-      ['lastActivityAt'],
-      ['goal'],
-      ['now', 'doing'],
-      ['now', 'doneCount'],
-      ['now', 'totalCount'],
-      ['plan', 'hasPlan'],
-      ['plan', 'openCount'],
-      ['plan', 'openTasks'],
-      ['attention', 'unseenCount'],
-      ['attention', 'needsYou'],
-      ['attention', 'pendingDirectives'],
-      ['git', 'isRepo'],
-      ['git', 'branch'],
-      ['git', 'changedFiles'],
-      ['git', 'lastCommitSubject'],
-      ['git', 'lastCommitAt'],
-      ['flags', 'stale'],
-      ['flags', 'leftDirty'],
-    ];
-    for (const keyPath of requiredKeys) {
-      let value = entry;
-      for (const key of keyPath) value = value ? value[key] : undefined;
-      assert.notStrictEqual(value, undefined, `expected ${keyPath.join('.')} to be defined`);
-    }
+    assertRequiredKeys(entry);
 
     assert.equal(entry.hydrated, true);
     assert.equal(entry.git.isRepo, false);
+  });
+
+  test('discovers never-seen git repos under configured roots without duplicating an indexed project', async (t) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-home-'));
+    const tmproot = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-root-'));
+    const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ar-overview-seen-'));
+
+    fs.mkdirSync(path.join(tmproot, 'repo-a', '.git'), { recursive: true });
+    fs.mkdirSync(path.join(tmproot, 'repo-b', '.git'), { recursive: true });
+    fs.mkdirSync(path.join(tmproot, 'plain-dir'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ roots: [tmproot] }));
+
+    process.env.ATTENTION_ROUTER_HOME = home;
+    delete require.cache[require.resolve('../server/index')];
+    const server = require('../server/index');
+
+    t.after(() => {
+      server.close();
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(tmproot, { recursive: true, force: true });
+      fs.rmSync(projectDir, { recursive: true, force: true });
+      delete process.env.ATTENTION_ROUTER_HOME;
+    });
+
+    await new Promise((resolve) => server.listen(0, resolve));
+    const port = server.address().port;
+
+    const envelope = {
+      id: 'ov-evt-2',
+      ts: new Date().toISOString(),
+      event: 'SessionStart',
+      payload: { cwd: projectDir, session_id: 'ov-sess-2', model: 'claude-sonnet-5' },
+    };
+    const posted = await httpJson('POST', port, '/event', envelope);
+    assert.equal(posted.status, 200);
+
+    const overviewRes = await httpJson('GET', port, '/api/overview');
+    assert.equal(overviewRes.status, 200);
+    assert.ok(Array.isArray(overviewRes.body));
+
+    const repoA = overviewRes.body.find((p) => p.cwd === path.join(tmproot, 'repo-a'));
+    const repoB = overviewRes.body.find((p) => p.cwd === path.join(tmproot, 'repo-b'));
+    const plain = overviewRes.body.find((p) => p.cwd === path.join(tmproot, 'plain-dir'));
+    const seen = overviewRes.body.find((p) => p.cwd === projectDir);
+
+    assert.ok(repoA, 'expected a never-seen entry for repo-a');
+    assert.ok(repoB, 'expected a never-seen entry for repo-b');
+    assert.equal(plain, undefined, 'plain-dir has no .git and must not appear');
+    assert.ok(seen, 'expected the previously-posted project to still appear');
+
+    assert.equal(repoA.status, 'never_seen');
+    assert.equal(repoB.status, 'never_seen');
+    assert.equal(repoA.flags.neverSeen, true);
+    assert.equal(repoB.flags.neverSeen, true);
+    assert.equal(seen.hydrated, true);
+    assert.equal(seen.flags.neverSeen, false);
+
+    assertRequiredKeys(repoA);
+    assertRequiredKeys(repoB);
+    assertRequiredKeys(seen);
+
+    const seenIdx = overviewRes.body.indexOf(seen);
+    const repoAIdx = overviewRes.body.indexOf(repoA);
+    const repoBIdx = overviewRes.body.indexOf(repoB);
+    assert.ok(seenIdx < repoAIdx, 'the seen/hydrated project should sort before the never-seen ones');
+    assert.ok(seenIdx < repoBIdx, 'the seen/hydrated project should sort before the never-seen ones');
   });
 });
